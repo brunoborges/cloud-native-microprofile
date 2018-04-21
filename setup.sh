@@ -1,4 +1,9 @@
 #!/bin/sh
+RESOURCE_GROUP=microprofileResourceGroup
+LOCATION=westus
+ACR_NAME=microprofileRegistry
+MP_SPEAKER=my-mp-speaker
+MP_CONF=my-mp-conference
 
 # Install Azure CLI
 brew install azure-cli
@@ -7,111 +12,53 @@ brew install azure-cli
 az login
 
 # Criar resource group
-az group create -n tdc2018 -l westus
+az group create -n $RESOURCE_GROUP -l $LOCATION
 
+### AZURE CONTAINER REGISTRY
 
-### AZURE CONTAINER INSTANCE
+# Create a private container image registry
+az acr create --resource-group $RESOURCE_GROUP --name $ACR_NAME --sku Basic --admin-enabled true
 
-# Criar Docker Hub Privado
-az acr create --resource-group tdc2018 --name tdchub --sku Basic --admin-enabled true
-
-# Login Docker Hub Privado
-az acr login -g tdc2018 --name tdchub
+# Logins Docker CLI to private repo (allowing docker pull/push)
+az acr login -g $RESOURCE_GROUP --name $ACR_NAME
 
 # ACR Show
-az acr show --name tdchub -g tdc2018 --query loginServer
-az acr show -g tdc2018 --name tdchub --query loginServer --output table
+az acr show --name $ACR_NAME -g $RESOURCE_GROUP --query loginServer
+az acr show --name $ACR_NAME -g $RESOURCE_GROUP --query loginServer --output table
 
 # ACR Show Images
-az acr repository list --name tdchub -g tdc2018 --output table
+az acr repository list --name $ACR_NAME -g $RESOURCE_GROUP --output table
 
 # ACR Show Credentials for docker CLI
-az acr credential show --name tdchub -g tdc2018 --query "passwords[0].value"
-az acr credential show --name tdchub -g tdc2018 --query "passwords[0].value" -o plain
-az acr credential show --name tdchub -g tdc2018 --query "passwords[0].value" -o tsv
-az acr credential show --name tdchub -g tdc2018 --query "passwords[0].value" -o tsv > acr_password
+az acr credential show --name $ACR_NAME -g $RESOURCE_GROUP --query "passwords[0].value" -o tsv > acr_password
 
-# Create Container Instance
-az container create --resource-group tdc2018 --name cloudee-duke \
-   --image tdchub.azurecr.io/cloudee-duke:latest --cpu 2 --memory 1 \
-   --registry-username tdchub --registry-password `cat acr_password` \
-   --dns-name-label cloudee-duke --ports 8080
+### AZURE CONTAINER INSTANCES
+# Create Container Instance for MicroProfile Speaker service
+az container create -g $RESOURCE_GROUP --name $MP_SPEAKER \
+   --image $ACR_NAME.azurecr.io/$(Build.Repository.Name)/microprofile-speaker:$(Build.BuildId) --cpu 1 --memory 1 \
+   --registry-username $ACR_NAME --registry-password `cat acr_password` \
+   --dns-name-label $MP_SPEAKER --ports 8080 9991
+
+az container create -g $RESOURCE_GROUP --name $MP_CONF \
+   --image $ACR_NAME.azurecr.io/$(Build.Repository.Name)/microprofile-conference:$(Build.BuildId) --cpu 1 --memory 1 \
+   --registry-username $ACR_NAME --registry-password `cat acr_password` \
+   --dns-name-label $MP_CONF --ports 8081 9991 \
+   --environment-variables SPEAKER_SERVICE=http://$MP_SPEAKER.$LOCATION.azurecontainer.io:8080/speakers
 
 # Container show
-az container show --resource-group tdc2018 --name cloudee-duke --query instanceView.state
+az container show -g $RESOURCE_GROUP --name $MP_CONF --query instanceView.state
+az container show -g $RESOURCE_GROUP --name $MP_SPEAKER --query instanceView.state
 
 # Container get IP
-az container show --resource-group tdc2018 --name cloudee-duke --query ipAddress.fqdn
+az container show -g $RESOURCE_GROUP --name $MP_CONF --query ipAddress.fqdn
+az container show -g $RESOURCE_GROUP --name $MP_SPEAKER --query ipAddress.fqdn
 
 # Container logs
-az container logs --resource-group tdc2018 --name cloudee-duke
+az container logs -g $RESOURCE_GROUP --name $MP_CONF
+az container logs -g $RESOURCE_GROUP --name $MP_SPEAKER
 
-# docker tag
-docker tag <img-rodrigo> <acr>/image
+# Delete Speaker container
+az container delete -g $RESOURCE_GROUP --name mp-speaker
 
-# docker push
-docker push <acr>/image
-
-docker push tdchub.azurecr.io/cloudee-duke:latest
-docker tag ivargrimstad/cloudee-duke:swarm tdchub.azurecr.io/cloudee-duke:latest
-
-
-#### AZURE KUBERNETES SERVICE
-az group create -n tdc2018east -l eastus
-az aks create --resource-group tdc2018east --name tdcAKSCluster --node-count 3 --generate-ssh-keys --kubernetes-version 1.9.2
-
-
-az aks get-credentials --resource-group tdc2018east --name tdc2018cluster
-
-brew install kubernetes-helm
-
-################
-################
-
-#!/bin/sh
-
-# Criar resource group
-az group create -n tdc2018 -l westus
-
-name: tdc2018
-
-# Criar container image repository
-az acr create --resource-group tdc2018 --name tdchub --sku Basic --admin-enabled true
-
-loginServer: tdchub.azurecr.io
-name: tdchub
-
-# ACR Login
-az acr login -g tdc2018 --name tdchub
-
-# ACR Get Full Name
-az acr show -g tdc2018 --name tdchub --query loginServer --output table
-
-tdchub.azurecr.io
-
-# ACR Get Credential Password
-az acr credential show --name tdchub -g tdc2018 --query "passwords[0].value" -o tsv > acr_password
-
-# ACR Tag Image
-docker tag ivargrimstad/cloudee-duke:swarm tdchub.azurecr.io/cloudee-duke:latest
-
-# Docker Push
-docker push tdchub.azurecr.io/cloudee-duke:latest
-
-# ACR List Images
-az acr repository list --name tdchub -g tdc2018 --output table
-
-# Efetuar deployment
-az container create --resource-group tdc2018 --name cloudee-duke  \
-  --image tdchub.azurecr.io/cloudee-duke:latest --cpu 2 --memory 1 \
-  --registry-username tdchub --registry-password `cat acr_password` \
-  --dns-name-label cloudee-duke --ports 8080
-
-# Checar status
-az container show --resource-group tdc2018 --name cloudee-duke --query instanceView.state
-
-# Get URL
-az container show --resource-group tdc2018 --name cloudee-duke --query ipAddress.fqdn
-
-# View logs
-az container logs --resource-group tdc2018 --name cloudee-duke
+# DELETE EVERYTHING
+az group delete --name $RESOURCE_GROUP
